@@ -1,3 +1,60 @@
+# ===============================
+# Python cache
+# ===============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ===============================
+# Weights / Models
+# ===============================
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.h5
+*.onnx
+
+# ===============================
+# Diffusion / Checkpoints
+# ===============================
+checkpoints/
+weights/
+# models/
+outputs/
+logs/
+wandb/
+lightning_logs/
+experiments/
+
+# ===============================
+# Dataset folders
+# ===============================
+# data/
+# datasets/
+*.zip
+*.tar
+*.tar.gz
+
+# ===============================
+# Jupyter
+# ===============================
+.ipynb_checkpoints/
+
+# ===============================
+# VSCode
+# ===============================
+.vscode/
+
+# ===============================
+# System
+# ===============================
+.DS_Store
+*.swp
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

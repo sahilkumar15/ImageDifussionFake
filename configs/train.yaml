@@ -1,0 +1,191 @@
+# code/DiffusionFake/configs/train.yaml
+# ✅ Tuned for better FF++ performance + more stable training
+# Key changes:
+# - lr ↑ (1e-4 -> 3e-4) with OneCycle
+# - weight_decay ↑ slightly
+# - epochs ↑ (100 -> 150)
+# - grad clip + EMA (if your code reads these fields)
+# - more frequent logger for monitoring
+# - keep dataset/splits identical
+
+seed: 3407
+torch_home: ""
+froze: false
+ckpt_path: null
+
+# --------------------------
+# DATASETS (training default)
+# --------------------------
+dataset:
+  name: "ffpp_rela"
+
+  ffpp_rela:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/ffpp"
+    data_types: ""
+    compressions: "c23"
+    num_frames: 50
+    methods: ["youtube", "Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures"]
+    has_mask: false
+    balance: true
+    relation_data: false
+    similarity: false
+    similarity_path: null
+    use_splits: true
+    strict_splits: true
+    splits_dirname: "splits"
+    random_patch: null
+
+  # ---- Celeb-DF (test only) ----
+  celeb_df:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/celebdf"
+    num_frames: 50
+    methods: "both"
+    control: true
+    alb: true
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/celebdf/split_csv/celeb_df_v2_test.csv"
+    strict_csv: false
+    min_frames: 1
+
+  # ---- DFD (test only) ----
+  dfd:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/dfd"
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/dfd/split_csv/dfd_test.csv"
+
+  # ---- WildDeepfake (test only) ----
+  wild_deepfake:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/wild_deepfake"
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/wild_deepfake/split_csv/wilddeepfake_test.csv"
+
+  # ---- DiffSwap (test only) ----
+  diffswap:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/diffswap"
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/diffswap/split_csv/diffswap_test.csv"
+
+# --------------------------
+# TRANSFORMS
+# --------------------------
+transform:
+  image_size: 256
+  mean: [0.5, 0.5, 0.5]
+  std:  [0.5, 0.5, 0.5]
+
+  # ⚠️ Only helps if your create_data_transforms() reads these keys.
+  # If not supported, they will be ignored (no harm).
+  aug:
+    enable: true
+    jpeg_quality: [40, 100]
+    blur_prob: 0.15
+    noise_prob: 0.15
+    color_jitter_prob: 0.25
+    grayscale_prob: 0.05
+    random_erasing_prob: 0.10
+
+# --------------------------
+# TRAIN / VAL / TEST
+# --------------------------
+train:
+  epochs: 100
+
+  # ✅ biggest impact: LR for OneCycle
+  lr: 3e-4
+  weight_decay: 5e-4
+
+  batch_size: 32
+  accumulate_grad_batches: 2
+  num_workers: 4
+  shuffle: true
+  drop_last: true
+
+  # log more often so you can see EER moving
+  logger_freq: 3000
+  resume_ckpt: auto
+
+  # ✅ stability (only used if your trainer reads these keys)
+  grad_clip_val: 1.0
+
+  ema:
+    enable: true
+    decay: 0.999
+
+  scheduler:
+    name: "onecycle"
+    interval: "step"
+    monitor: "v/eer"
+
+    onecycle:
+      pct_start: 0.1
+      div_factor: 25.0
+      final_div_factor: 10000.0
+      anneal_strategy: "cos"
+
+    cosine:
+      eta_min_factor: 0.05
+
+    cosine_warmup:
+      warmup_steps: 2000
+      min_lr_factor: 0.05
+
+    plateau:
+      factor: 0.5
+      patience: 2
+      threshold: 1e-4
+      min_lr_factor: 0.05
+
+    step:
+      step_size: 10
+      gamma: 0.5
+
+val:
+  batch_size: 16
+  num_workers: 4
+  shuffle: false
+  drop_last: false
+  max_items: null
+
+test:
+  batch_size: 1
+  num_workers: 2
+  shuffle: false
+  drop_last: false
+  threshold: 0.5
+  max_items: null
+
+# --------------------------
+# WANDB / EXPERIMENT
+# --------------------------
+wandb:
+  project: "DFD_2"
+  group: "Final"
+  job_type: null
+  id: null
+  resume: null
+  save_code: true
+  notes: null
+
+experiment:
+  root_dir: "experiments"
+  name: "FFPP_10"
+
+checkpoint:
+  monitor: "v/eer"
+  mode: "min"
+  save_top_k: 3
+  save_last: true
+  save_epochs: []
+  best_filename: "best-eer-epoch={epoch:02d}"
+  every_filename: "epoch={epoch:02d}"
+
+# --------------------------
+# ✅ CROSS-DATASET EVALUATION
+# --------------------------
+eval:
+  ckpt_path: null
+  model_config: "configs/diffusionfake.yaml"
+  out_csv: null
+
+  batch_size: 64
+  num_workers: 4
+  threshold: 0.5
+
+  # evaluate FF++ now; add others once celeb_df loader loads frames
+  datasets: ["ffpp_rela"]
