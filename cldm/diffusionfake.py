@@ -594,7 +594,7 @@ class DiffusionFake(LatentDiffusion):
         # self.criterion = nn.BCELoss()
         # ✅ stable + correct for logits
         self.criterion = torch.nn.BCEWithLogitsLoss()
-        self.lambda_cls = 5.0   # try 2.0, 5.0, 10.0 (best usually 5)
+        self.lambda_cls = 2.0   # try 2.0, 5.0, 10.0 (best usually 5)
 
         # ✅ buffers for EER/AUC over full val epoch
         self._val_probs = []
@@ -649,7 +649,8 @@ class DiffusionFake(LatentDiffusion):
 
         control = control.to(memory_format=torch.contiguous_format).float()
 
-        return source, target, dict(c_crossattn=[c], c_concat=[control]), (label, source_score, target_score)
+        has_scores = (batch.get("source_score", None) is not None) and (batch.get("target_score", None) is not None)
+        return source, target, dict(c_crossattn=[c], c_concat=[control]), (label, source_score, target_score, has_scores)
 
     def apply_model(self, x_noisy, t, cond, *args, **kwargs):
         assert isinstance(cond, dict)
@@ -664,7 +665,13 @@ class DiffusionFake(LatentDiffusion):
         if cond["c_concat"] is None:
             x_in = x_noisy_s if is_tuple else x_noisy
             eps = diffusion_model(x=x_in, timesteps=t, context=cond_txt, control=None, only_mid_control=self.only_mid_control)
-            return eps, eps, None
+
+            # ✅ return a dummy logit tensor so BCE doesn't crash
+            # (better: compute real logits from a classifier branch, but this prevents failure)
+            B = x_in.shape[0]
+            output = torch.zeros(B, 1, device=x_in.device, dtype=torch.float32)
+
+            return eps, eps, output
 
         if is_tuple:
             control_source, control_target, output, contribution = self.control_model(
@@ -676,6 +683,11 @@ class DiffusionFake(LatentDiffusion):
             contribution = torch.clamp(contribution, 0.0, 1.0)
             self.source_weight, self.target_weight = contribution[:, 0], contribution[:, 1]
 
+            # apply static per-layer control scales first
+            control_source = [c * s for c, s in zip(control_source, self.control_scales_s)]
+            control_target = [c * s for c, s in zip(control_target, self.control_scales_t)]
+
+            # then apply per-sample contribution weights
             control_source = [c * self.source_weight.view(-1, 1, 1, 1) for c in control_source]
             control_target = [c * self.target_weight.view(-1, 1, 1, 1) for c in control_target]
 
@@ -693,6 +705,11 @@ class DiffusionFake(LatentDiffusion):
             contribution = torch.clamp(contribution, 0.0, 1.0)
             self.source_weight, self.target_weight = contribution[:, 0], contribution[:, 1]
 
+            # ✅ apply static per-layer control scales first
+            control_source = [c * s for c, s in zip(control_source, self.control_scales_s)]
+            control_target = [c * s for c, s in zip(control_target, self.control_scales_t)]
+
+            # ✅ then apply per-sample contribution weights
             control_source = [c * self.source_weight.view(-1, 1, 1, 1) for c in control_source]
             control_target = [c * self.target_weight.view(-1, 1, 1, 1) for c in control_target]
 
@@ -790,8 +807,8 @@ class DiffusionFake(LatentDiffusion):
 
     def shared_step(self, batch, **kwargs):
         source, target, c, label = self.get_input(batch, self.first_stage_key)
-        loss = self(source, target, c, label)
-        return loss
+        loss, loss_dict = self(source, target, c, label)
+        return loss, loss_dict
 
     def forward(self, source, target, c, label, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (source.shape[0],), device=self.device).long()
@@ -805,8 +822,9 @@ class DiffusionFake(LatentDiffusion):
 
         loss, bceloss, loss_dict = self.p_losses((source, target), c, t, label, *args, **kwargs)
 
-        # --- NEW: weight classification higher ---
-        loss = loss + (self.lambda_cls * bceloss)
+        diff_w = float(getattr(self, "diff_w", 1.0))
+        loss = (diff_w * loss) + (self.lambda_cls * bceloss)
+        loss_dict["t/diff_w"] = torch.tensor(diff_w, device=self.device)
 
         loss_dict["t/loss_total"] = loss.detach() if self.training else loss.detach()
         loss_dict["t/lambda_cls"] = torch.tensor(self.lambda_cls, device=self.device)
@@ -830,10 +848,12 @@ class DiffusionFake(LatentDiffusion):
             ce_labels = labels[0].float()
             source_score = labels[1].float()
             target_score = labels[2].float()
+            has_scores = bool(labels[3]) if len(labels) > 3 else False
         else:
             ce_labels = labels.float()
             source_score = torch.ones_like(ce_labels, device=self.device)
             target_score = torch.ones_like(ce_labels, device=self.device)
+            has_scores = False
 
         cls_output = output
         loss_dict = {}
@@ -899,11 +919,25 @@ class DiffusionFake(LatentDiffusion):
         loss_target = loss_simple_target.float() * inv_var + logvar_t
         loss = loss_source + loss_target
 
-        source_weight_loss = nn.MSELoss()(self.source_weight, source_score)
-        target_weight_loss = nn.MSELoss()(self.target_weight, target_score)
-        weight_loss = source_weight_loss + target_weight_loss
-        loss_dict["w_l"] = weight_loss
-        loss = loss + weight_loss
+        # # apply weight loss ONLY if dataset provided real scores
+        # use_weight_loss = False
+        # if isinstance(labels, tuple):
+        #     # if your dataset actually populates these (not just default ones)
+        #     # you can set a flag in the batch like batch["has_scores"]=True to be explicit
+        #     use_weight_loss = ("source_score" in cond.get("meta", {}))  # optional pattern
+        #     # simpler: treat non-None + not-all-ones as real
+        #     use_weight_loss = (source_score is not None) and (target_score is not None)
+        
+        use_weight_loss = has_scores
+
+        if use_weight_loss:
+            source_weight_loss = nn.MSELoss()(self.source_weight, source_score)
+            target_weight_loss = nn.MSELoss()(self.target_weight, target_score)
+            weight_loss = source_weight_loss + target_weight_loss
+            loss_dict["w_l"] = weight_loss
+            loss = loss + weight_loss
+        else:
+            loss_dict["w_l"] = torch.tensor(0.0, device=self.device)
 
         if self.learn_logvar:
             loss_dict.update({f"{prefix}/l_gamma": loss.mean()})
@@ -932,12 +966,42 @@ class DiffusionFake(LatentDiffusion):
         return loss, bce_loss, loss_dict
 
     def configure_optimizers(self):
-        lr = self.learning_rate
+        args = getattr(self, "args", None)
+        lr = float(getattr(self, "learning_rate", 3e-4))
+        if args is not None and hasattr(args, "train") and hasattr(args.train, "lr"):
+            lr = float(args.train.lr)
+
+        # --- read weight decay from YAML if present ---
+        wd = 0.0
+        if args is not None and hasattr(args, "train") and hasattr(args.train, "weight_decay"):
+            wd = float(args.train.weight_decay)
+
         params = list(self.control_model.parameters())
         if not self.sd_locked:
             params += list(self.model.diffusion_model.output_blocks.parameters())
             params += list(self.model.diffusion_model.out.parameters())
-        opt = torch.optim.AdamW(params, lr=lr)
+
+        opt = torch.optim.AdamW(params, lr=lr, weight_decay=wd, betas=(0.9, 0.999))
+
+        # --- read scheduler from YAML if present ---
+        if args is not None and hasattr(args, "train") and hasattr(args.train, "scheduler"):
+            sch = args.train.scheduler
+            if getattr(sch, "name", "") == "onecycle":
+                cfg = sch.onecycle
+
+                total_steps = int(self.trainer.estimated_stepping_batches)
+
+                scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                    opt,
+                    max_lr=lr,
+                    total_steps=total_steps,
+                    pct_start=float(cfg.pct_start),
+                    div_factor=float(cfg.div_factor),
+                    final_div_factor=float(cfg.final_div_factor),
+                    anneal_strategy=str(cfg.anneal_strategy),
+                )
+                return {"optimizer": opt, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+
         return opt
 
     def low_vram_shift(self, is_diffusing):

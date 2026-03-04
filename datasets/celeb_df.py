@@ -1,231 +1,221 @@
-# code/DiffusionFake/datasets/celeb_df.py
+# code/ImageDifussionFake/datasets/celeb_df.py
+
 import os
-import cv2
 import glob
+import cv2
 import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data as data
 
 
+def _norm_to_minus1_1(img: np.ndarray) -> np.ndarray:
+    """Convert HWC RGB image to float32 in [-1,1]. Accepts 0..255 or 0..1."""
+    img = img.astype(np.float32)
+    mx = float(img.max()) if img.size else 0.0
+    mn = float(img.min()) if img.size else 0.0
+    if mx > 2.0:  # 0..255
+        img = (img / 127.5) - 1.0
+    elif mn >= 0.0 and mx <= 1.0:  # 0..1
+        img = (img * 2.0) - 1.0
+    return img
+
+
+def _hwc_to_chw_tensor(img: np.ndarray) -> torch.Tensor:
+    if img.ndim != 3 or img.shape[-1] != 3:
+        raise ValueError(f"Expected HWC RGB, got {img.shape}")
+    return torch.from_numpy(img).permute(2, 0, 1).contiguous().float()
+
+
 class CelebDF(data.Dataset):
     """
-    CelebDF dataset with optional CSV split loading (FFPP-style).
+    CSV provides MP4 path + label + source (YouTube-real / Celeb-real / Celeb-synthesis).
 
-    CSV expected columns:
-      - path  : absolute path to .mp4 (or relative to data_root)
-      - label : 0 real, 1 fake
-    Optional:
-      - source: "YouTube-real" / "Celeb-real" / "Celeb-synthesis"
+    We map MP4 -> extracted frames folder:
+        <data_root>/<source>-mtcnn/<vid>/*.png
+
+    Then we expand into per-frame items (like the original DiffusionFake loader),
+    uniformly subsampling up to num_frames per video.
+
+    Returns a dict compatible with your "control" pipeline:
+      source, target, hint, hint_ori, txt, label, ori_path
     """
 
     def __init__(
         self,
-        data_root,
-        split,
-        num_frames,
-        transform=None,
+        data_root: str,
+        split: str,
+        num_frames: int,
+        transform=None,              # albumentations pipeline (Normalize+ToTensorV2)
         base_transform=None,
         target_transform=None,
-        alb=True,
-        methods="both",
-        control=False,
-        split_csv=None,
-        strict_csv=False,     # ✅ default False for cross-dataset eval (do NOT crash)
-        min_frames=1,         # ✅ allow 1+ frames (set 5 if you really want)
-        mtcnn_suffix="-mtcnn",
+        alb: bool = True,
+        methods: str = "both",       # "real" / "fake" / "both"
+        control: bool = True,
+        split_csv: str = None,       # REQUIRED (your generated CSV)
+        strict_csv: bool = False,
+        min_frames: int = 1,
+        mtcnn_suffix: str = "-mtcnn",
+        image_size: int = 256,
+        skip_bad_images: bool = True,
+        debug_first_n_missing: int = 3,
     ):
-        self.split = split
-        self.frame_nums = int(num_frames)
+        self.data_root = str(data_root)
+        self.split = str(split)
+        self.num_frames = int(num_frames)
         self.transform = transform
-        self.target_transform = target_transform
-        self.data_root = data_root
-        self.alb = alb
-        self.methods = methods
-        self.control = control
         self.base_transform = base_transform
+        self.target_transform = target_transform
+        self.alb = bool(alb)
+        self.methods = str(methods)
+        self.control = bool(control)
 
         self.split_csv = split_csv
-        self.strict_csv = strict_csv
+        self.strict_csv = bool(strict_csv)
         self.min_frames = int(min_frames)
         self.mtcnn_suffix = str(mtcnn_suffix)
+        self.image_size = int(image_size)
+        self.skip_bad_images = bool(skip_bad_images)
+        self.debug_first_n_missing = int(debug_first_n_missing)
 
-        if self.split_csv is not None:
-            self.datas = self._load_items_from_csv(self.split_csv)
-        else:
-            self.datas = self._load_items_from_official_list()
+        if self.split_csv is None:
+            raise ValueError("[CelebDF] split_csv is required.")
 
-        print(f"[CelebDF:{self.split}] Total frames: {len(self.datas)} | fake_frames: {self.fake_num}, real_frames: {self.real_num}")
+        self.items = self._load_items_from_csv(self.split_csv)
+
+        self.real_num = sum(1 for _, y, _ in self.items if float(y) < 0.5)
+        self.fake_num = len(self.items) - self.real_num
+
+        print(
+            f"[CelebDF:{self.split}] loaded_frames={len(self.items)} "
+            f"real_frames={self.real_num} fake_frames={self.fake_num} "
+            f"(csv={self.split_csv})"
+        )
 
     def __len__(self):
-        return len(self.datas)
+        return len(self.items)
 
     def __getitem__(self, index):
-        img_path, target, folder = self.datas[index]
+        img_path, label, _folder = self.items[index]
 
-        image_bgr = cv2.imread(img_path)
-        if image_bgr is None:
-            # for eval you want to skip bad reads rather than crash:
-            raise FileNotFoundError(f"[CelebDF] Failed to read image: {img_path}")
-        image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        img = cv2.imread(img_path)
+        if img is None:
+            if self.skip_bad_images:
+                return self.__getitem__((index + 1) % len(self.items))
+            raise FileNotFoundError(f"[CelebDF] cannot read: {img_path}")
 
-        if self.control:
-            image_size = 256
-            image_resized = cv2.resize(image, (image_size, image_size))
-            image_resized = image_resized.astype(np.float32) / 255.0  # 0..1
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
 
-            if self.transform is not None:
-                hint = self.transform(image=image_resized)["image"]  # torch CHW
-            else:
-                hint = torch.from_numpy(image_resized).permute(2, 0, 1).float()
+        # raw image in [-1,1] (ControlNet-style)
+        hint_ori = _hwc_to_chw_tensor(_norm_to_minus1_1(img))
 
-            hint_ori = torch.from_numpy(image_resized).permute(2, 0, 1).float() * 2.0 - 1.0
-
-            return {
-                "txt": "",
-                "hint": hint,
-                "hint_ori": hint_ori,
-                "label": int(target),
-                "path": img_path,
-            }
-
-        # non-control mode
-        if self.base_transform is None:
-            if self.transform is not None:
-                if self.alb:
-                    image = self.transform(image=image)["image"]
-                else:
-                    image = self.transform(img=image)
-            return image, target, img_path
+        # augmented/normalized by albumentations transform
+        if self.transform is not None:
+            out = self.transform(image=img)
+            hint = out["image"] if isinstance(out, dict) else out
+            if not isinstance(hint, torch.Tensor):
+                raise TypeError(f"[CelebDF] transform must return torch.Tensor; got {type(hint)}")
+            if hint.ndim != 3 or hint.shape[0] != 3:
+                raise ValueError(f"[CelebDF] hint shape bad: {hint.shape}")
         else:
-            image_norm = self.transform(image=image)["image"]
-            small_image = self.base_transform(image=image)["image"]
-            return image_norm, target, small_image, img_path
+            hint = hint_ori.clone()
 
-    # -------------------------
-    # CSV LOADER (MP4 -> MTCNN frames)
-    # -------------------------
+        y = int(label)
+
+        return {
+            "source": hint_ori,
+            "target": hint_ori,
+            "txt": "",
+            "hint_ori": hint_ori,
+            "hint": hint,
+            "label": y,
+            "ori_path": img_path,
+        }
+
     def _load_items_from_csv(self, csv_path: str):
+        csv_path = str(csv_path)
         if not os.path.isabs(csv_path):
             csv_path = os.path.join(self.data_root, csv_path)
-
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"[CelebDF] split_csv not found: {csv_path}")
 
         df = pd.read_csv(csv_path)
         if len(df) == 0:
-            raise ValueError(f"[CelebDF] split_csv is empty: {csv_path}")
+            raise ValueError(f"[CelebDF] split_csv empty: {csv_path}")
 
-        if "path" not in df.columns or "label" not in df.columns:
-            raise ValueError(f"[CelebDF] CSV must have columns ['path','label']. Found: {list(df.columns)}")
+        for col in ["path", "label", "source"]:
+            if col not in df.columns:
+                raise ValueError(f"[CelebDF] CSV must contain column '{col}'. got={list(df.columns)}")
 
-        has_source = "source" in df.columns
-
-        datas = []
-        self.fake_num = 0
-        self.real_num = 0
-        skipped_rows = 0
+        items = []
+        missing_mp4 = 0
         missing_folder = 0
         too_few_frames = 0
+        skipped_rows = 0
+        printed_missing = 0
 
         for _, row in df.iterrows():
             mp4_path = str(row["path"]).strip()
             if not mp4_path:
                 skipped_rows += 1
                 continue
-
-            # allow mp4 paths that are relative to data_root
             if not os.path.isabs(mp4_path):
                 mp4_path = os.path.join(self.data_root, mp4_path)
+            if not os.path.exists(mp4_path):
+                missing_mp4 += 1
+                if self.strict_csv:
+                    raise FileNotFoundError(f"[CelebDF] mp4 missing: {mp4_path}")
+                continue
 
             y = float(row["label"])
             y = 1.0 if y >= 0.5 else 0.0
 
-            # filter by methods
             if self.methods == "real" and y == 1.0:
                 continue
             if self.methods == "fake" and y == 0.0:
                 continue
 
-            # get source name
-            if has_source:
-                src = str(row["source"]).strip()   # YouTube-real / Celeb-real / Celeb-synthesis
-            else:
-                # infer from mp4 path
-                if "YouTube-real" in mp4_path:
-                    src = "YouTube-real"
-                elif "Celeb-real" in mp4_path:
-                    src = "Celeb-real"
-                elif "Celeb-synthesis" in mp4_path:
-                    src = "Celeb-synthesis"
-                else:
-                    if self.strict_csv:
-                        raise ValueError(f"[CelebDF] Cannot infer source for: {mp4_path}")
-                    skipped_rows += 1
-                    continue
+            src_dir = str(row["source"]).strip()
+            if not src_dir:
+                src_dir = os.path.basename(os.path.dirname(mp4_path))
 
             vid = os.path.splitext(os.path.basename(mp4_path))[0]
 
-            # ✅ Robust folder building:
-            # mp4_dir = .../Celeb-DF_v2/YouTube-real
-            # parent  = .../Celeb-DF_v2
-            mp4_dir = os.path.dirname(mp4_path)
-            parent = os.path.dirname(mp4_dir)
+            # expected extraction layout:
+            #   <data_root>/<source>-mtcnn/<vid>/*.png
+            folder = os.path.join(self.data_root, f"{src_dir}{self.mtcnn_suffix}", vid)
 
-            # Candidate A: correct for your layout
-            candA = os.path.join(parent, f"{src}{self.mtcnn_suffix}", vid)
-
-            # Candidate B: if someone extracted frames at data_root/<src>-mtcnn/<vid>
-            candB = os.path.join(self.data_root, f"{src}{self.mtcnn_suffix}", vid)
-
-            # Candidate C: parent of parent fallback
-            candC = os.path.join(os.path.dirname(parent), f"{src}{self.mtcnn_suffix}", vid)
-
-            folder = None
-            for c in (candA, candB, candC):
-                if os.path.isdir(c):
-                    folder = c
-                    break
-
-            if folder is None:
-                if self.strict_csv:
-                    raise FileNotFoundError(
-                        f"[CelebDF] mtcnn folder not found for: {mp4_path}\nTried:\n  {candA}\n  {candB}\n  {candC}"
-                    )
+            if not os.path.isdir(folder):
                 missing_folder += 1
+                if printed_missing < self.debug_first_n_missing:
+                    printed_missing += 1
+                    print(
+                        f"[CelebDF:{self.split}] MISSING frames folder for mp4={mp4_path}\n"
+                        f"  expected:\n"
+                        f"    {folder}\n"
+                    )
+                if self.strict_csv:
+                    raise FileNotFoundError(f"[CelebDF] frames folder not found: {folder}")
                 continue
 
             face_paths = sorted(glob.glob(os.path.join(folder, "*.png")))
             if len(face_paths) < self.min_frames:
-                if self.strict_csv:
-                    raise FileNotFoundError(f"[CelebDF] Not enough frames in {folder} (found {len(face_paths)})")
                 too_few_frames += 1
+                if self.strict_csv:
+                    raise FileNotFoundError(f"[CelebDF] too few frames in {folder}: {len(face_paths)}")
                 continue
 
-            # sample frames
-            if len(face_paths) > self.frame_nums:
-                idx = np.linspace(0, len(face_paths) - 1, self.frame_nums, endpoint=True, dtype=int)
+            # uniform sampling per video
+            if len(face_paths) > self.num_frames:
+                idx = np.linspace(0, len(face_paths) - 1, self.num_frames, endpoint=True, dtype=int)
                 face_paths = [face_paths[i] for i in idx]
 
-            # count frames
-            if y == 1.0:
-                self.fake_num += len(face_paths)
-            else:
-                self.real_num += len(face_paths)
-
-            datas.extend([[fp, y, folder] for fp in face_paths])
+            items.extend([[fp, y, folder] for fp in face_paths])
 
         print(
-            f"[CelebDF:{self.split}] Using split CSV: {csv_path} rows={len(df)} "
-            f"loaded_frames={len(datas)} missing_folder={missing_folder} too_few_frames={too_few_frames} skipped_rows={skipped_rows}"
+            f"[CelebDF:{self.split}] CSV={csv_path} rows={len(df)} "
+            f"loaded_frames={len(items)} missing_mp4={missing_mp4} "
+            f"missing_folder={missing_folder} too_few_frames={too_few_frames} skipped_rows={skipped_rows}"
         )
-        return datas
-
-    # -------------------------
-    # KEEP: original list loader (optional)
-    # -------------------------
-    def _load_items_from_official_list(self):
-        raise NotImplementedError(
-            "For your cross-dataset eval you said you already have CSV. "
-            "Use split_csv=... in YAML and this path won't be used."
-        )
+        return items

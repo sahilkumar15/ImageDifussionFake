@@ -1,4 +1,4 @@
-# code/DiffusionFake/configs/train.yaml
+# code/ImageDifussionFake/configs/train.yaml
 # ✅ Tuned for better FF++ performance + more stable training
 # Key changes:
 # - lr ↑ (1e-4 -> 3e-4) with OneCycle
@@ -35,7 +35,7 @@ dataset:
     splits_dirname: "splits"
     random_patch: null
 
-  # ---- Celeb-DF (test only) ----
+  # ===== Celeb-DF (cross-dataset eval) =====
   celeb_df:
     data_root: "/scratch/sahil/projects/img_deepfake/datasets/celebdf"
     num_frames: 50
@@ -45,6 +45,8 @@ dataset:
     split_csv: "/scratch/sahil/projects/img_deepfake/datasets/celebdf/split_csv/celeb_df_v2_test.csv"
     strict_csv: false
     min_frames: 1
+    mtcnn_suffix: "-mtcnn"
+    image_size: 256
 
   # ---- DFD (test only) ----
   dfd:
@@ -164,7 +166,7 @@ wandb:
 
 experiment:
   root_dir: "experiments"
-  name: "FFPP_10"
+  name: "FFPP_1"
 
 checkpoint:
   monitor: "v/eer"
@@ -188,4 +190,4 @@ eval:
   threshold: 0.5
 
   # evaluate FF++ now; add others once celeb_df loader loads frames
-  datasets: ["ffpp_rela"]
+  # datasets: ["ffpp_rela"]
