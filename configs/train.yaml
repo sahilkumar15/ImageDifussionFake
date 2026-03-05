@@ -42,7 +42,8 @@ dataset:
     methods: "both"
     control: true
     alb: true
-    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/celebdf/split_csv/celeb_df_v2_test.csv"
+    # split_csv: "/scratch/sahil/projects/img_deepfake/datasets/celebdf/split_csv/celeb_df_v2_test.csv"
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/celebdf/split_csv/celeb_df_v2_train.csv"
     strict_csv: false
     min_frames: 1
     mtcnn_suffix: "-mtcnn"

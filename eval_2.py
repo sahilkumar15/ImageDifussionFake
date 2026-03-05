@@ -185,18 +185,34 @@ def main():
     model = create_model(model_config).cpu()
     model.args = args
 
-    # load checkpoint
-    ckpt = torch.load(args_cli.ckpt, map_location="cpu")
-    state = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    print(f"[LOAD] ckpt={args_cli.ckpt} missing={len(missing)} unexpected={len(unexpected)}")
-
-    # optional repo hook
+    # ✅ IMPORTANT: create the dynamically-added layers BEFORE loading ckpt
     if hasattr(model, "control_model") and hasattr(model.control_model, "define_feature_filter"):
         model.control_model.define_feature_filter()
 
+    # load checkpoint
+    ckpt = torch.load(args_cli.ckpt, map_location="cpu")
+    state = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
+
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    print(f"[LOAD] ckpt={args_cli.ckpt} missing={len(missing)} unexpected={len(unexpected)}")
+
+    # ✅ if mismatch is large, fail fast (otherwise you silently evaluate random weights)
+    if len(unexpected) > 50:
+        print("Example unexpected keys:", unexpected[:25])
+        raise RuntimeError(
+            f"Checkpoint/model mismatch too large: unexpected={len(unexpected)}. "
+            "This usually means model layers were created after loading, or config mismatch."
+        )
+    if len(missing) > 50:
+        print("Example missing keys:", missing[:25])
+        raise RuntimeError(
+            f"Checkpoint/model mismatch too large: missing={len(missing)}. "
+            "Your model config may not match the training config."
+        )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device).eval()
+    model = model.to(device)
+    model.eval()
 
     base_dl = create_dataset(args, split=args_cli.split)
     loader = DataLoader(

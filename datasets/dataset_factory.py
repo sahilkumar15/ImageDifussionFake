@@ -7,6 +7,7 @@ from torch.utils.data import Subset
 from .celeb_df import CelebDF
 from .ffpp_control import FaceForensicsRelation
 from .transforms import create_data_transforms
+from .dfd import DFD
 
 
 def _maybe_subset(dataset, args, split: str):
@@ -50,6 +51,8 @@ def create_dataset(args, split: str):
         dataset = FaceForensicsRelation(split=split, transform=transform, **kwargs)
     elif args.dataset.name == "celeb_df":
         dataset = CelebDF(split=split, transform=transform, **kwargs)
+    elif args.dataset.name == "dfd":
+        dataset = DFD(split=split, transform=transform, **kwargs)
     else:
         raise ValueError(f"Invalid dataset name: {args.dataset.name}")
 

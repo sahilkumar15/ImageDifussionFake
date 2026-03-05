@@ -29,7 +29,8 @@ else
   exit 1
 fi
 
-OUT_CSV="${OUT_CSV:-$EXP_DIR/eval/celebdf_v2_test_preds.csv}"
+
+OUT_CSV="${OUT_CSV:-$EXP_DIR/eval/celeb_train/celebdf_v2_test_preds.csv}"
 mkdir -p "$(dirname "$OUT_CSV")"
 
 echo "[EVAL] EXP_DIR=$EXP_DIR"
@@ -49,3 +50,5 @@ python -u eval_2.py \
 # chmod +x code/ImageDifussionFake/scripts/eval.sh
 # chmod +x scripts/eval.sh
 # bash scripts/eval.sh
+
+# python utils/debug_dump_frames.py
