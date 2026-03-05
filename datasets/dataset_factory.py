@@ -8,7 +8,8 @@ from .celeb_df import CelebDF
 from .ffpp_control import FaceForensicsRelation
 from .transforms import create_data_transforms
 from .dfd import DFD
-
+from .diffswap import DiffSwap
+from .wild_deepfake import WildDeepfake
 
 def _maybe_subset(dataset, args, split: str):
     """
@@ -53,6 +54,15 @@ def create_dataset(args, split: str):
         dataset = CelebDF(split=split, transform=transform, **kwargs)
     elif args.dataset.name == "dfd":
         dataset = DFD(split=split, transform=transform, **kwargs)
+    elif args.dataset.name == "diffswap":
+
+        # remove video parameters (DiffSwap is image dataset)
+        kwargs.pop("num_frames", None)
+        kwargs.pop("min_frames", None)
+
+        dataset = DiffSwap(split=split, transform=transform, **kwargs)
+    elif args.dataset.name == "wild_deepfake":
+        dataset = WildDeepfake(split=split, transform=transform, **kwargs)
     else:
         raise ValueError(f"Invalid dataset name: {args.dataset.name}")
 

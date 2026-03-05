@@ -51,8 +51,15 @@ dataset:
 
   # ---- DFD (test only) ----
   dfd:
-    data_root: "/scratch/sahil/projects/img_deepfake/datasets/dfd"
-    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/dfd/split_csv/dfd_test.csv"
+    data_root: /scratch/sahil/projects/img_deepfake/datasets/dfd
+    split_csv: /scratch/sahil/projects/img_deepfake/datasets/dfd/split_csv/dfd_test.csv
+    num_frames: 50
+    image_size: 256
+    min_frames: 1
+    mtcnn_suffix: "-mtcnn"
+    strict_csv: false
+    skip_bad_images: true
+    methods: "both"
 
   # ---- WildDeepfake (test only) ----
   wild_deepfake:
@@ -61,8 +68,12 @@ dataset:
 
   # ---- DiffSwap (test only) ----
   diffswap:
-    data_root: "/scratch/sahil/projects/img_deepfake/datasets/diffswap"
-    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/diffswap/split_csv/diffswap_test.csv"
+    data_root: /scratch/sahil/projects/img_deepfake/datasets/diffswap
+    split_csv: /scratch/sahil/projects/img_deepfake/datasets/diffswap/split_csv/diffswap_test.csv
+    image_size: 256
+    strict_csv: false
+    skip_bad_images: true
+    methods: "both"
 
 # --------------------------
 # TRANSFORMS

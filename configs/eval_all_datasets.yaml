@@ -1,0 +1,91 @@
+# code/ImageDifussionFake/configs/eval_4datasets.yaml
+
+seed: 3407
+torch_home: ""
+froze: false
+ckpt_path: null
+
+dataset:
+  name: "ffpp_rela"   # default; eval runner overrides per dataset
+
+  ffpp_rela:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/ffpp"
+    data_types: ""
+    compressions: "c23"
+    num_frames: 50
+    methods: ["youtube", "Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures"]
+    has_mask: false
+    balance: true
+    relation_data: false
+    similarity: false
+    similarity_path: null
+    use_splits: true
+    strict_splits: true
+    splits_dirname: "splits"
+
+  celeb_df:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/celebdf"
+    num_frames: 50
+    methods: "both"
+    control: true
+    alb: true
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/celebdf/split_csv/celeb_df_v2_test.csv"
+    strict_csv: false
+    min_frames: 1
+    mtcnn_suffix: "-mtcnn"
+    image_size: 256
+    skip_bad_images: true
+
+  dfd:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/dfd"
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/dfd/split_csv/dfd_test.csv"
+    num_frames: 50
+    image_size: 256
+    min_frames: 1
+    mtcnn_suffix: "-mtcnn"
+    strict_csv: false
+    skip_bad_images: true
+    methods: "both"
+    # eval settings (your DFD class supports these):
+    eval_k_frames_per_video: 1
+    eval_balance_classes: false
+    eval_seed: 1234
+
+  diffswap:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/diffswap"
+    # use FULL CSV (imbalanced ok):
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/diffswap/split_csv/diffswap_mixed_full.csv"
+    image_size: 256
+    strict_csv: false
+    skip_bad_images: true
+    methods: "both"
+
+  wild_deepfake:
+    data_root: "/scratch/sahil/projects/img_deepfake/datasets/wild_deepfake"
+    split_csv: "/scratch/sahil/projects/img_deepfake/datasets/wild_deepfake/split_csv/wilddeepfake_test.csv"
+    image_size: 256
+    strict_csv: false
+    skip_bad_images: true
+    methods: "both"
+
+transform:
+  image_size: 256
+  mean: [0.5, 0.5, 0.5]
+  std:  [0.5, 0.5, 0.5]
+
+eval:
+  model_config: "configs/diffusionfake.yaml"
+  batch_size: 64
+  num_workers: 4
+  threshold: 0.5
+
+  datasets:
+    - ffpp_rela
+    - celeb_df
+    - dfd
+    - diffswap
+    - wild_deepfake
+
+
+
+    
