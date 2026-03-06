@@ -1,4 +1,4 @@
-# code/DiffusionFake/cldm/diffusionfake.py
+# code/ImageDifussionFake/cldm/diffusionfake.py
 
 import einops
 import torch
@@ -71,6 +71,8 @@ except Exception:
         xception,
     )
     from efficientnet_pytorch.model import EfficientNet
+    
+from cldm.mamba_modules import MambaFakeHead
 
 
 encoder_params = {
@@ -467,6 +469,8 @@ class GuideNet(nn.Module):
 
         self.feature_s = FeatureFilter(1792, 320)
         self.feature_t = FeatureFilter(1792, 320)
+
+        # keep old heads for ablations / fallback
         self.fc = Linear(1792, 1)
         self.fc_s = Linear(1280, 1)
         self.fc_t = Linear(1280, 1)
@@ -475,6 +479,15 @@ class GuideNet(nn.Module):
         self.contribution_target = WeightNet(1792)
         self.global_pool = AdaptiveAvgPool2d((1, 1))
 
+        # NEW: DIMF / Mamba-inspired classification head
+        self.mamba_head = MambaFakeHead(
+            d_model=1792,
+            d_reduced=512,   # lighter and usually sufficient
+            num_mamba_layers=2,
+            d_state=16,
+            pool_size=7,
+            dropout=0.1,
+        )
         self.use_feature_filter = True
 
     # =========================
@@ -535,8 +548,11 @@ class GuideNet(nn.Module):
         contribution_t = self.contribution_target(feature)
         contribution = torch.cat((contribution_s, contribution_t), dim=1)
 
-        output = self.global_pool(feature).flatten(1)
-        output = self.fc(output)
+        # NEW:
+        # feature   -> backbone global feature map
+        # up_feat_s -> source-related high-channel feature map
+        # up_feat_t -> target-related high-channel feature map
+        output = self.mamba_head(feature, up_feat_s, up_feat_t)
 
         source_outs = []
         target_outs = []
@@ -594,7 +610,7 @@ class DiffusionFake(LatentDiffusion):
         # self.criterion = nn.BCELoss()
         # ✅ stable + correct for logits
         self.criterion = torch.nn.BCEWithLogitsLoss()
-        self.lambda_cls = 2.0   # try 2.0, 5.0, 10.0 (best usually 5)
+        self.lambda_cls = 5.0   # try 2.0, 5.0, 10.0 (best usually 5)
 
         # ✅ buffers for EER/AUC over full val epoch
         self._val_probs = []

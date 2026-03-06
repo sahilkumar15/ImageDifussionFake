@@ -1,3 +1,6 @@
+# code/ImageDifussionFake/eval_generalization.py
+
+
 import argparse
 import os
 import sys
@@ -15,8 +18,31 @@ from datasets import create_dataset
 from cldm.model import create_model
 
 
+# =========================
+# Helpers: rounding to 3 dp
+# =========================
+def _round_floats(obj, ndigits=3):
+    """Recursively round floats in dict/list/tuple to ndigits."""
+    if isinstance(obj, dict):
+        return {k: _round_floats(v, ndigits) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        out = [_round_floats(v, ndigits) for v in obj]
+        return tuple(out) if isinstance(obj, tuple) else out
+    if isinstance(obj, float):
+        return round(obj, ndigits)
+    return obj
+
+
+def _round_print_metrics(m: dict, ndigits=3):
+    """Return a copy rounded for printing / JSON."""
+    return _round_floats(m, ndigits)
+
+
 @torch.no_grad()
 def compute_metrics(probs_np, labs_np):
+    """
+    Returns raw (full precision) metrics; we round only for JSON/printing.
+    """
     probs_np = probs_np.astype(np.float64)
     labs_np = (labs_np > 0.5).astype(np.int32)
 
@@ -40,7 +66,6 @@ def compute_metrics(probs_np, labs_np):
 
         auc = float(roc_auc_score(labs_np, probs_np))
 
-        # best acc over ROC thresholds
         accs = []
         for th_ in thr:
             pred = (probs_np >= th_).astype(np.int32)
@@ -93,7 +118,9 @@ def _predict_prob_from_model(model, batch):
         if k in d and torch.is_tensor(d[k]):
             return torch.sigmoid(d[k].detach().float().view(-1)).cpu()
 
-    raise RuntimeError(f"Could not find probs/logits in loss_dict. Keys: {sorted(list(d.keys()))[:80]}")
+    raise RuntimeError(
+        f"Could not find probs/logits in loss_dict. Keys: {sorted(list(d.keys()))[:80]}"
+    )
 
 
 @torch.no_grad()
@@ -129,15 +156,11 @@ def _ensure_split_cfg(args, split: str, bs: int, nw: int):
     if not hasattr(args, split) or getattr(args, split) is None:
         from argparse import Namespace
         setattr(args, split, Namespace())
+
     split_cfg = getattr(args, split)
-    if not hasattr(split_cfg, "batch_size"):
-        split_cfg.batch_size = bs
-    else:
-        split_cfg.batch_size = bs
-    if not hasattr(split_cfg, "num_workers"):
-        split_cfg.num_workers = nw
-    else:
-        split_cfg.num_workers = nw
+    split_cfg.batch_size = int(bs)
+    split_cfg.num_workers = int(nw)
+
     if not hasattr(split_cfg, "shuffle"):
         split_cfg.shuffle = False
     if not hasattr(split_cfg, "drop_last"):
@@ -154,6 +177,8 @@ def main():
     ap.add_argument("--out_csv", required=True, help="combined csv output (all datasets)")
     ap.add_argument("--out_metrics", required=True, help="metrics json output")
     ap.add_argument("--per_dataset_dir", default=None, help="optional dir to save per-dataset csvs")
+    ap.add_argument("--round_ndigits", type=int, default=3, help="round metrics to N decimals for JSON/printing")
+    ap.add_argument("--round_csv", action="store_true", help="if set, round prob/label in CSV to N decimals")
     args_cli = ap.parse_args()
 
     # Parse YAML via your project config loader (get_parameters reads sys.argv)
@@ -165,7 +190,7 @@ def main():
     args.config = args_cli.config
     setup(args)
 
-    # model
+    # model config
     model_config = "configs/diffusionfake.yaml"
     if hasattr(args, "eval"):
         if isinstance(args.eval, dict) and "model_config" in args.eval:
@@ -180,6 +205,7 @@ def main():
     if hasattr(model, "control_model") and hasattr(model.control_model, "define_feature_filter"):
         model.control_model.define_feature_filter()
 
+    # load checkpoint
     ckpt = torch.load(args_cli.ckpt, map_location="cpu")
     state = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
     missing, unexpected = model.load_state_dict(state, strict=False)
@@ -188,7 +214,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device).eval()
 
-    # eval.datasets
+    # eval.datasets + bs/nw from YAML
     eval_datasets = []
     if hasattr(args, "eval"):
         if isinstance(args.eval, dict):
@@ -220,6 +246,7 @@ def main():
 
     all_rows = []
     metrics = {}
+    nd = int(args_cli.round_ndigits)
 
     for ds_name in eval_datasets:
         print(f"\n=== DATASET: {ds_name} ({args_cli.split}) ===")
@@ -229,8 +256,8 @@ def main():
 
         # override loader settings for selected split
         split_cfg = getattr(args, args_cli.split)
-        split_cfg.batch_size = bs
-        split_cfg.num_workers = nw
+        split_cfg.batch_size = int(bs)
+        split_cfg.num_workers = int(nw)
         split_cfg.shuffle = False
         split_cfg.drop_last = False
 
@@ -246,10 +273,14 @@ def main():
         )
 
         probs_np, labs_np, paths_all = run_eval_one_dataset(model, loader, device)
-        m = compute_metrics(probs_np, labs_np)
+
+        # raw metrics for correctness
+        m_raw = compute_metrics(probs_np, labs_np)
+        # rounded for reporting/JSON
+        m = _round_print_metrics(m_raw, nd)
         metrics[ds_name] = m
 
-        print(f"N: {m['N']} AUC: {m['AUC']} EER: {m['EER']}")
+        print(f"N: {m['N']} AUC: {m['AUC']:.{nd}f} EER: {m['EER']:.{nd}f}")
 
         # per-dataset csv (optional)
         if args_cli.per_dataset_dir is not None:
@@ -260,6 +291,9 @@ def main():
                 "label": labs_np[:len(probs_np)],
                 "prob": probs_np[:len(probs_np)],
             })
+            if args_cli.round_csv:
+                df_ds["label"] = df_ds["label"].astype(float).round(nd)
+                df_ds["prob"] = df_ds["prob"].astype(float).round(nd)
             df_ds.to_csv(os.path.join(args_cli.per_dataset_dir, f"{ds_name}_{args_cli.split}.csv"), index=False)
 
         # combined rows
@@ -275,28 +309,35 @@ def main():
 
     # combined dataframe
     df_all = pd.DataFrame(all_rows)
+    if args_cli.round_csv:
+        df_all["label"] = df_all["label"].astype(float).round(nd)
+        df_all["prob"] = df_all["prob"].astype(float).round(nd)
+
     df_all.to_csv(out_csv, index=False)
     print(f"\n[OK] wrote combined CSV: {out_csv}")
     print("Rows:", len(df_all), "Datasets:", df_all["dataset"].nunique())
 
-    # overall metrics (micro = weighted by N)
-    overall_micro = compute_metrics(df_all["prob"].to_numpy(), df_all["label"].to_numpy())
+    # overall metrics
+    overall_micro_raw = compute_metrics(df_all["prob"].to_numpy(dtype=np.float64),
+                                        df_all["label"].to_numpy(dtype=np.float64))
+    overall_micro = _round_print_metrics(overall_micro_raw, nd)
 
-    # overall macro = average of per-dataset metrics (equal weight)
-    # (AUC/EER averaged across datasets)
     aucs = [metrics[d]["AUC"] for d in eval_datasets if metrics[d]["N"] > 0]
     eers = [metrics[d]["EER"] for d in eval_datasets if metrics[d]["N"] > 0]
     overall_macro = {
         "N_datasets": int(len(aucs)),
-        "AUC_macro": float(np.mean(aucs)) if len(aucs) else 0.5,
-        "EER_macro": float(np.mean(eers)) if len(eers) else 0.5,
+        "AUC_macro": round(float(np.mean(aucs)), nd) if len(aucs) else 0.5,
+        "EER_macro": round(float(np.mean(eers)), nd) if len(eers) else 0.5,
     }
 
     metrics["__overall_micro__"] = overall_micro
     metrics["__overall_macro__"] = overall_macro
 
+    # dump rounded JSON
+    metrics = _round_floats(metrics, nd)
     with open(out_metrics, "w") as f:
         json.dump(metrics, f, indent=2)
+
     print(f"[OK] wrote metrics JSON: {out_metrics}")
     print("\nOverall micro:", overall_micro)
     print("Overall macro:", overall_macro)

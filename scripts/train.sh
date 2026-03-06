@@ -29,4 +29,4 @@ torchrun --nproc_per_node=$NUM_GPUS train.py -c configs/train.yaml
 
 
 # bash scripts/train.sh
-# bash scripts/train.sh 2,3,4
+# bash scripts/train.sh 0,1,7,5

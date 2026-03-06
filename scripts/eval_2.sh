@@ -27,7 +27,8 @@ else
   exit 1
 fi
 
-OUT_DIR="$EXP_DIR/eval"
+# OUT_DIR="$EXP_DIR/eval_all_${SPLIT}"
+OUT_DIR="$EXP_DIR/eval_all"
 OUT_CSV="${OUT_CSV:-$OUT_DIR/generalization_all_${SPLIT}.csv}"
 OUT_METRICS="${OUT_METRICS:-$OUT_DIR/generalization_all_${SPLIT}_metrics.json}"
 PER_DS_DIR="${PER_DS_DIR:-$OUT_DIR/per_dataset_${SPLIT}}"

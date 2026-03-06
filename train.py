@@ -372,12 +372,45 @@ def main():
     # model (load init weights only if NOT resuming)
     # -----------------------
     model = create_model("configs/diffusionfake.yaml").cpu()
-    model.args = args  # ✅ NEW: lets model read args.train.scheduler
+    model.args = args
+
+    # IMPORTANT: build the full control model first, including DIMF head
+    model.control_model.define_feature_filter()
 
     if resume_ckpt is None:
-        model.load_state_dict(load_state_dict(resume_path, location="cpu"))
+        state_dict = load_state_dict(resume_path, location="cpu")
 
-    model.control_model.define_feature_filter()
+        if isinstance(state_dict, dict) and "state_dict" in state_dict:
+            state_dict = state_dict["state_dict"]
+
+        # remove incompatible key
+        state_dict.pop("cond_stage_model.transformer.text_model.embeddings.position_ids", None)
+
+        model_state = model.state_dict()
+        filtered_state = {}
+        skipped_keys = []
+
+        for k, v in state_dict.items():
+            if k in model_state and model_state[k].shape == v.shape:
+                filtered_state[k] = v
+            else:
+                skipped_keys.append(k)
+
+        missing, unexpected = model.load_state_dict(filtered_state, strict=False)
+
+        if _is_rank0(args):
+            print(f"[INFO] Loaded {len(filtered_state)} matching keys from checkpoint")
+            print(f"[INFO] Skipped {len(skipped_keys)} keys")
+            for k in skipped_keys[:20]:
+                print("   SKIPPED:", k)
+
+            print(f"[INFO] Missing keys after load: {len(missing)}")
+            for k in missing[:20]:
+                print("   MISSING:", k)
+
+            print(f"[INFO] Unexpected keys after load: {len(unexpected)}")
+            for k in unexpected[:20]:
+                print("   UNEXPECTED:", k)
 
     # Lightning module uses these attributes
     model.learning_rate = learning_rate
